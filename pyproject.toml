@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "general-mcp-tool"
+version = "0.1.0"
+description = "Python module to manage the Microsoft Power BI Modeling MCP npm package."
+requires-python = ">=3.10"
+readme = "README.md"
+
+[project.scripts]
+powerbi-mcp-manager = "powerbi_mcp_manager.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
