@@ -59,7 +59,39 @@ def test_postgresql_request_builds_preview_execution_plan() -> None:
     assert plan.tool_hints[McpTarget.POSTGRESQL] == "run_guided_query"
 
 
-def test_generic_sql_request_does_not_select_sql_server_in_phase_zero() -> None:
+def test_explicit_sql_server_request_builds_preview_execution_plan() -> None:
+    router = ExecutionRouter(DefaultMcpClientRegistry())
+    enriched = build_enriched("Use SQL Server to prepare monthly sales revenue SQL")
+    policy = DefaultExecutionPolicyService().decide(
+        enriched,
+        OrchestrationTraceRecorder("test-correlation").trace,
+    )
+
+    plan = router.create_plan(enriched, policy)
+
+    assert plan.target_mcps == [McpTarget.SQL_SERVER]
+    assert plan.execution_mode == ExecutionMode.PREVIEW_ONLY
+    assert plan.policy_decision is policy
+    assert plan.tool_hints[McpTarget.SQL_SERVER] == "run_guided_query"
+
+
+def test_explicit_mssql_request_routes_to_sql_server() -> None:
+    router = ExecutionRouter(DefaultMcpClientRegistry())
+
+    plan = router.create_plan(build_enriched("Use MSSQL to prepare revenue SQL"))
+
+    assert plan.target_mcps == [McpTarget.SQL_SERVER]
+
+
+def test_explicit_tsql_request_routes_to_sql_server() -> None:
+    router = ExecutionRouter(DefaultMcpClientRegistry())
+
+    plan = router.create_plan(build_enriched("Use T-SQL to inspect sales_orders"))
+
+    assert plan.target_mcps == [McpTarget.SQL_SERVER]
+
+
+def test_generic_sql_request_defaults_to_postgresql() -> None:
     router = ExecutionRouter(DefaultMcpClientRegistry())
 
     plan = router.create_plan(
@@ -67,6 +99,16 @@ def test_generic_sql_request_does_not_select_sql_server_in_phase_zero() -> None:
     )
 
     assert plan.target_mcps == [McpTarget.POSTGRESQL]
+
+
+def test_both_relational_clients_are_preview_first_by_default() -> None:
+    router = ExecutionRouter(DefaultMcpClientRegistry())
+
+    postgres_plan = router.create_plan(build_enriched("Use PostgreSQL to prepare revenue SQL"))
+    sql_server_plan = router.create_plan(build_enriched("Use SQL Server to prepare revenue SQL"))
+
+    assert postgres_plan.execution_mode == ExecutionMode.PREVIEW_ONLY
+    assert sql_server_plan.execution_mode == ExecutionMode.PREVIEW_ONLY
 
 
 @pytest.mark.asyncio

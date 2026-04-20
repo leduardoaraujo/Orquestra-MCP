@@ -17,13 +17,15 @@ from mcp_orchestrator.domain.ports import BaseMCPClient, ExecutionPlanningStrate
 
 
 class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
+    relational_targets = {McpTarget.POSTGRESQL, McpTarget.SQL_SERVER}
+
     def create_plan(
         self,
         enriched_request: EnrichedRequest,
         registry: McpClientRegistry,
         policy_decision: ExecutionPolicyDecision | None = None,
     ) -> ExecutionPlan:
-        targets = self._available_targets(enriched_request, registry)
+        targets = self._available_targets(enriched_request, registry, policy_decision)
         mode = self._execution_mode(targets, policy_decision)
         trace = self._trace(enriched_request, targets, mode)
         if policy_decision:
@@ -41,10 +43,15 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
         self,
         enriched_request: EnrichedRequest,
         registry: McpClientRegistry,
+        policy_decision: ExecutionPolicyDecision | None,
     ) -> list[McpTarget]:
+        preferred = enriched_request.understanding.target_preference
+        if preferred and self._client_supports_policy(registry.get(preferred), policy_decision):
+            return [preferred]
+
         selected: list[McpTarget] = []
         for target in enriched_request.understanding.candidate_mcps:
-            if registry.get(target):
+            if self._client_supports_policy(registry.get(target), policy_decision):
                 selected.append(target)
 
         if selected:
@@ -53,6 +60,7 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
         return [
             client.target
             for client in registry.all()
+            if self._client_supports_policy(client, policy_decision)
             if client.can_handle(
                 ExecutionPlan(
                     correlation_id=enriched_request.correlation_id,
@@ -63,6 +71,27 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
             )
         ]
 
+    def _client_supports_policy(
+        self,
+        client: BaseMCPClient | None,
+        policy_decision: ExecutionPolicyDecision | None,
+    ) -> bool:
+        if client is None:
+            return False
+        if policy_decision is None:
+            return True
+
+        capabilities = client.capabilities()
+        if policy_decision.preview_only:
+            return capabilities.supports_preview
+        if policy_decision.read_only:
+            return capabilities.supports_read
+        if policy_decision.write:
+            return capabilities.supports_write
+        if policy_decision.side_effects:
+            return capabilities.supports_side_effects
+        return True
+
     def _execution_mode(
         self,
         targets: list[McpTarget],
@@ -70,7 +99,7 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
     ) -> ExecutionMode:
         if policy_decision and policy_decision.preview_only:
             return ExecutionMode.PREVIEW_ONLY
-        if targets == [McpTarget.POSTGRESQL]:
+        if len(targets) == 1 and targets[0] in self.relational_targets:
             return ExecutionMode.PREVIEW_ONLY
         if len(targets) > 1:
             return ExecutionMode.PARALLEL
@@ -80,6 +109,8 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
         hints: dict[McpTarget, str] = {}
         if McpTarget.POSTGRESQL in targets:
             hints[McpTarget.POSTGRESQL] = "run_guided_query"
+        if McpTarget.SQL_SERVER in targets:
+            hints[McpTarget.SQL_SERVER] = "run_guided_query"
         return hints
 
     def _trace(
@@ -195,9 +226,9 @@ class ExecutionRouter:
         plan: ExecutionPlan,
         target: McpTarget,
     ) -> dict[str, Any]:
-        if target == McpTarget.POSTGRESQL:
+        if target in {McpTarget.POSTGRESQL, McpTarget.SQL_SERVER}:
             return {
-                "question": self._postgres_question(enriched_request),
+                "question": self._relational_question(enriched_request, target),
                 "auto_execute": self._auto_execute(plan.policy_decision),
                 "limit": 100,
             }
@@ -206,24 +237,33 @@ class ExecutionRouter:
             "mode": plan.execution_mode.value,
         }
 
-    def _postgres_question(self, enriched_request: EnrichedRequest) -> str:
+    def _relational_question(self, enriched_request: EnrichedRequest, target: McpTarget) -> str:
         context_lines = [
             f"- {item.source_path}: {item.content[:500]}"
             for item in enriched_request.retrieved_context.items
         ]
         constraints = enriched_request.constraints or ["Preview only. Do not execute data retrieval."]
+        backend = self._backend_label(target)
         return "\n".join(
             [
-                "Prepare a safe PostgreSQL SQL preview for this enriched request.",
+                f"Prepare a safe {backend} SQL preview for this enriched request.",
                 f"Original user request: {enriched_request.original_request}",
                 f"Intent: {enriched_request.understanding.intent}",
                 f"Task type: {enriched_request.understanding.task_type.value}",
+                f"Requested action: {enriched_request.understanding.requested_action.value}",
                 "Constraints:",
                 *[f"- {constraint}" for constraint in constraints],
                 "Retrieved local context:",
                 *(context_lines or ["- No local context was retrieved."]),
             ]
         )
+
+    def _backend_label(self, target: McpTarget) -> str:
+        if target == McpTarget.SQL_SERVER:
+            return "SQL Server"
+        if target == McpTarget.POSTGRESQL:
+            return "PostgreSQL"
+        return target.value
 
     def _auto_execute(self, policy_decision: ExecutionPolicyDecision | None) -> bool:
         if not policy_decision:

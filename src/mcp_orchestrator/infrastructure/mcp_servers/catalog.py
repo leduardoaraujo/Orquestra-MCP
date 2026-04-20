@@ -121,6 +121,8 @@ class LocalMcpServerCatalog:
         value = value.replace("-", "_")
         if value in {"postgressql", "postgresql"}:
             return "postgresql"
+        if value in {"sqlserver", "sql_server", "mssql"}:
+            return "sql_server"
         if value in {"powerbi", "power_bi", "powerbi_modeling", "powerbi_modeling_mcp"}:
             return "power_bi"
         return value

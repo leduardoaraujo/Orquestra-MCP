@@ -6,7 +6,7 @@ O **MCP Orchestrator** evoluiu de uma arquitetura conceitual para uma fundação
 
 O sistema atua como um **middleware contextual de orquestração para servidores MCP especializados**. Ele não é um roteador simples. Antes de chamar qualquer MCP especialista, o orquestrador interpreta a solicitação, recupera contexto local, compõe uma requisição enriquecida, aplica governança de execução, cria um plano de execução e só então chama o cliente especialista adequado.
 
-Atualmente, o PostgreSQL é a primeira integração especialista real, usando o servidor PostgreSQL MCP local por meio de `stdio`.
+Atualmente, PostgreSQL e SQL Server possuem adapters reais de clientes MCP por meio de `stdio`. O PostgreSQL MCP está presente no repositório; o SQL Server MCP depende de um servidor local futuro em `mcps/`.
 
 ## Fluxo Atual da Orquestração
 
@@ -60,6 +60,19 @@ A segunda etapa de implementação adicionou governança explícita de execuçã
 
 Agora, o orquestrador toma uma decisão explícita de política antes de chamar qualquer MCP especialista.
 
+### Fase 2 - Orquestração Relacional Multi-Backend
+
+A terceira etapa adicionou o SQL Server como o segundo adapter real de cliente MCP especialista.
+
+O objetivo da Fase 2 foi provar que os contratos de orquestração não são específicos de PostgreSQL. PostgreSQL e SQL Server agora seguem o mesmo modelo relacional:
+
+- seleção de backend por entendimento da solicitação
+- decisão explícita de política antes da execução
+- comportamento preview-first por padrão
+- opt-in explícito para leitura quando permitido pela política
+- bloqueio de escrita e efeitos colaterais antes da chamada ao MCP
+- detalhes de transporte isolados em `debug`
+
 ## Arquitetura Modular
 
 ```mermaid
@@ -75,8 +88,8 @@ flowchart LR
 
     ROUTER --> CLIENTS["Camada de Clientes MCP"]
     CLIENTS --> PG["PostgreSQL MCP<br/>integração real via stdio"]
+    CLIENTS --> SQLS["SQL Server MCP<br/>adapter real via stdio"]
     CLIENTS --> PBI["Power BI<br/>cliente futuro"]
-    CLIENTS --> SQLS["SQL Server<br/>cliente futuro"]
     CLIENTS --> EXCEL["Excel<br/>cliente futuro"]
 
     RETRIEVAL --> DOCS["docs/context"]
@@ -130,6 +143,35 @@ com:
 ```
 
 Isso significa que o comportamento padrão é **preview-first**: o sistema prepara uma prévia segura de SQL em vez de executar consultas automaticamente no banco de dados.
+
+## Integração com SQL Server MCP
+
+O SQL Server agora possui um adapter real de cliente MCP usando o mesmo contrato do PostgreSQL.
+
+O adapter espera que um servidor SQL Server MCP local seja adicionado futuramente em uma pasta como:
+
+```text
+mcps/sql-server-mcp/
+mcps/sqlserver-mcp/
+mcps/mssql-mcp/
+```
+
+Cada pasta deve expor um `server.py` para execução via `stdio`.
+
+Enquanto o servidor SQL Server MCP não existir localmente, o client retorna um erro controlado:
+
+```text
+MCP server not found: sql_server
+```
+
+O contrato esperado para MCPs relacionais inclui:
+
+- descoberta de schema
+- listagem de tabelas
+- descrição de tabela
+- preview seguro de query
+- execução read-only opcional quando a política permite
+- bloqueio de escrita e efeitos colaterais por padrão
 
 ## Política de Execução
 
@@ -335,10 +377,10 @@ A suíte de testes cobre:
 - trace de orquestração
 - endpoints FastAPI
 
-Resultado atual:
+Resultado atual após a Fase 2:
 
 ```text
-36 testes passando
+49 testes passando
 ```
 
 ## Commits Criados
@@ -357,6 +399,7 @@ O projeto agora possui:
 - fundação executável de orquestração
 - fluxo tipado de ponta a ponta
 - integração real com PostgreSQL MCP
+- adapter real para SQL Server MCP via `stdio`
 - recuperação de contexto local
 - governança explícita de execução
 - rastreabilidade tipada
@@ -370,10 +413,10 @@ Próximos passos recomendados:
 1. Adicionar um fluxo de confirmação para ações bloqueadas ou sensíveis.
 2. Persistir traces e decisões de política em um storage auditável.
 3. Substituir o interpretador heurístico por um interpretador baseado em LLM.
-4. Implementar um cliente real para Power BI MCP.
-5. Implementar um cliente real para SQL Server MCP.
+4. Adicionar o servidor SQL Server MCP local e validar integração fim a fim.
+5. Implementar um cliente real para Power BI MCP.
 6. Melhorar a recuperação local com embeddings.
 7. Adicionar logs estruturados e métricas mais ricas.
-8. Adicionar testes de integração controlados contra um banco PostgreSQL real.
+8. Adicionar testes de integração controlados contra bancos PostgreSQL e SQL Server reais.
 
 A arquitetura central está pronta para essas adições sem reescrever o pipeline de orquestração.

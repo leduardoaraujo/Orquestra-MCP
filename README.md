@@ -21,8 +21,11 @@ The executable Phase 0 flow is:
 7. Execute a `SpecialistExecutionRequest` through a specialist MCP client.
 8. Return a `NormalizedResponse`.
 
-PostgreSQL is the first real specialist integration. Power BI, SQL Server, and
-Excel remain registered as future extension points.
+PostgreSQL and SQL Server are real relational specialist client adapters. The
+PostgreSQL MCP server is checked into this repository. SQL Server expects a
+local MCP server folder such as `mcps/sql-server-mcp`, `mcps/sqlserver-mcp`, or
+`mcps/mssql-mcp` before live execution can work. Power BI and Excel remain
+registered as future extension points.
 
 ## Execution Governance
 
@@ -38,9 +41,9 @@ call. The policy captures:
 - `blocked_reason`
 - `safety_level`
 
-Phase 1 is preview-first. PostgreSQL orchestration calls `run_guided_query` with
-`auto_execute=false` unless request metadata explicitly allows read-only
-execution:
+Phase 2 is preview-first for relational backends. PostgreSQL and SQL Server
+orchestration call `run_guided_query` with `auto_execute=false` unless request
+metadata explicitly allows read-only execution:
 
 ```json
 {
@@ -58,6 +61,7 @@ The policy decision is included in `debug.orchestration_trace`.
 - Python 3.11+
 - Node.js and npm on `PATH` for `powerbi_mcp_manager`
 - PostgreSQL MCP environment variables when calling the real PostgreSQL MCP tools
+- A local SQL Server MCP server folder when calling SQL Server tools live
 
 ## Installation
 
@@ -135,7 +139,7 @@ Invoke-RestMethod -Method Post `
   -Body $body
 ```
 
-For PostgreSQL orchestration, Phase 1 calls `run_guided_query` with
+For relational orchestration, Phase 2 calls `run_guided_query` with
 `auto_execute=false`. The result is a safe SQL preview, not an automatic data-row
 query execution.
 
@@ -204,6 +208,8 @@ mcps/
   powerbi-modeling-mcp/
   postgressql-mcp-master/
     server.py
+  sql-server-mcp/
+    server.py
 ```
 
 The orchestrator does not import specialist server code directly. It discovers
@@ -222,6 +228,18 @@ POSTGRES_DB_1_NAME=main
 POSTGRES_DB_1_DSN=postgresql://user:password@localhost:5432/app_db
 ```
 
+SQL Server MCP setup is expected to mirror the relational MCP contract:
+
+- schema discovery
+- table listing
+- safe query preview through `run_guided_query`
+- optional read-only execution when governance allows it
+- no write or side-effecting execution by default
+
+The SQL Server client adapter is implemented, but this repository does not yet
+include a SQL Server MCP server. Add a local server folder under `mcps/` using an
+alias such as `sql-server-mcp`, `sqlserver-mcp`, or `mssql-mcp`.
+
 List discovered servers:
 
 ```powershell
@@ -232,6 +250,12 @@ List PostgreSQL tools:
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:8000/mcp-servers/postgresql/tools
+```
+
+List SQL Server tools after adding a local SQL Server MCP server:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/mcp-servers/sql_server/tools
 ```
 
 Call a PostgreSQL tool directly:
@@ -303,5 +327,6 @@ src/mcp_orchestrator/
   observability/
 ```
 
-See `docs/architecture/executable-foundation.md` for the implemented Phase 0
+See `docs/architecture/executable-foundation.md` and
+`docs/architecture/phase-2-multi-backend-orchestration.md` for the implemented
 architecture.

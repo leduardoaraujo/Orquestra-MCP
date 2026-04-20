@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from mcp_orchestrator.config import Settings
@@ -36,6 +37,26 @@ def test_catalog_accepts_powerbi_alias() -> None:
 
     assert server is not None
     assert server.name == "power_bi"
+
+
+@pytest.mark.parametrize(
+    ("folder_name", "alias"),
+    [
+        ("sql-server-mcp", "sql-server"),
+        ("sqlserver-mcp", "sqlserver"),
+        ("mssql-mcp", "mssql"),
+    ],
+)
+def test_catalog_accepts_sql_server_aliases(tmp_path: Path, folder_name: str, alias: str) -> None:
+    server_dir = tmp_path / folder_name
+    server_dir.mkdir()
+    (server_dir / "server.py").write_text("print('sql server mcp')", encoding="utf-8")
+    catalog = LocalMcpServerCatalog(tmp_path)
+
+    server = catalog.get(alias)
+
+    assert server is not None
+    assert server.name == "sql_server"
 
 
 def test_api_exposes_mcp_servers_status() -> None:
