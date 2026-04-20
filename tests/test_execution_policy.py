@@ -1,0 +1,58 @@
+from mcp_orchestrator.application import (
+    DefaultContextComposer,
+    DefaultExecutionPolicyService,
+    HeuristicRequestInterpreter,
+)
+from mcp_orchestrator.application.trace import OrchestrationTraceRecorder
+from mcp_orchestrator.domain.enums import SafetyLevel
+from mcp_orchestrator.domain.models import RetrievedContext, UserRequest
+
+
+def build_enriched(message: str, metadata: dict[str, object] | None = None):
+    request = UserRequest(message=message, domain_hint="postgresql", metadata=metadata or {})
+    understanding = HeuristicRequestInterpreter().understand(request)
+    return DefaultContextComposer().compose(
+        "cid",
+        request,
+        understanding,
+        RetrievedContext(query=message),
+    )
+
+
+def test_policy_defaults_postgresql_to_preview_only() -> None:
+    enriched = build_enriched("Use PostgreSQL to prepare monthly sales revenue SQL.")
+    trace = OrchestrationTraceRecorder("cid").trace
+
+    decision = DefaultExecutionPolicyService().decide(enriched, trace)
+
+    assert decision.preview_only is True
+    assert decision.allow_execution is False
+    assert decision.safety_level == SafetyLevel.SAFE
+
+
+def test_policy_allows_explicit_read_only_execution() -> None:
+    enriched = build_enriched(
+        "Read rows from PostgreSQL sales_orders.",
+        metadata={"allow_execution": True},
+    )
+    trace = OrchestrationTraceRecorder("cid").trace
+
+    decision = DefaultExecutionPolicyService().decide(enriched, trace)
+
+    assert decision.preview_only is False
+    assert decision.read_only is True
+    assert decision.allow_execution is True
+    assert decision.safety_level == SafetyLevel.REVIEW_REQUIRED
+
+
+def test_policy_blocks_write_requests() -> None:
+    enriched = build_enriched("Delete rows from PostgreSQL sales_orders.")
+    trace = OrchestrationTraceRecorder("cid").trace
+
+    decision = DefaultExecutionPolicyService().decide(enriched, trace)
+
+    assert decision.write is True
+    assert decision.requires_confirmation is True
+    assert decision.allow_execution is False
+    assert decision.safety_level == SafetyLevel.BLOCKED
+    assert decision.blocked_reason

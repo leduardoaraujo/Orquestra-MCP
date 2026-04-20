@@ -20,6 +20,9 @@ from mcp_orchestrator.normalization import DefaultResponseNormalizer
 
 
 class FakePostgresToolRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
     async def list_tools(self, server: McpServerDefinition):
         return []
 
@@ -29,6 +32,7 @@ class FakePostgresToolRunner:
         tool_name: str,
         arguments: dict[str, object],
     ) -> McpToolCallResponse:
+        self.calls.append((tool_name, arguments))
         return McpToolCallResponse(
             server_name=server.name,
             tool_name=tool_name,
@@ -103,6 +107,13 @@ def test_orchestrate_postgresql_request_returns_traceable_specialist_response() 
     assert body["sources_used"]
     assert body["mcp_trace"]
     assert "raw_result" not in body
+    assert tool_runner.calls[0][0] == "run_guided_query"
+    assert tool_runner.calls[0][1]["auto_execute"] is False
+    trace = body["debug"]["orchestration_trace"]
+    assert trace["request_id"] == body["correlation_id"]
+    assert trace["selected_target_mcps"] == ["postgresql"]
+    assert trace["policy_decision"]["preview_only"] is True
+    assert trace["retrieved_context_sources"]
 
 
 def test_docs_index_rebuild_updates_status() -> None:

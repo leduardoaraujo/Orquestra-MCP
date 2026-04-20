@@ -16,12 +16,42 @@ The executable Phase 0 flow is:
 2. Build a typed `RequestUnderstanding`.
 3. Retrieve local context from `docs/context`.
 4. Compose an `EnrichedRequest`.
-5. Create an `ExecutionPlan`.
-6. Execute a `SpecialistExecutionRequest` through a specialist MCP client.
-7. Return a `NormalizedResponse`.
+5. Make an `ExecutionPolicyDecision`.
+6. Create an `ExecutionPlan`.
+7. Execute a `SpecialistExecutionRequest` through a specialist MCP client.
+8. Return a `NormalizedResponse`.
 
 PostgreSQL is the first real specialist integration. Power BI, SQL Server, and
 Excel remain registered as future extension points.
+
+## Execution Governance
+
+The orchestrator makes an explicit policy decision before any specialist MCP
+call. The policy captures:
+
+- `preview_only`
+- `read_only`
+- `write`
+- `side_effects`
+- `requires_confirmation`
+- `allow_execution`
+- `blocked_reason`
+- `safety_level`
+
+Phase 1 is preview-first. PostgreSQL orchestration calls `run_guided_query` with
+`auto_execute=false` unless request metadata explicitly allows read-only
+execution:
+
+```json
+{
+  "metadata": {
+    "allow_execution": true
+  }
+}
+```
+
+Write or side-effecting requests are blocked before a specialist MCP is called.
+The policy decision is included in `debug.orchestration_trace`.
 
 ## Requirements
 
@@ -105,9 +135,40 @@ Invoke-RestMethod -Method Post `
   -Body $body
 ```
 
-For PostgreSQL orchestration, Phase 0 calls `run_guided_query` with
+For PostgreSQL orchestration, Phase 1 calls `run_guided_query` with
 `auto_execute=false`. The result is a safe SQL preview, not an automatic data-row
 query execution.
+
+To explicitly allow read-only execution in Phase 1:
+
+```json
+{
+  "message": "Read rows from PostgreSQL sales_orders.",
+  "domain_hint": "postgresql",
+  "tags": ["sales", "postgresql"],
+  "metadata": {
+    "allow_execution": true
+  }
+}
+```
+
+This opt-in is ignored for write or side-effecting requests, which remain
+blocked until a confirmation workflow exists.
+
+## Traceability
+
+`NormalizedResponse.debug.orchestration_trace` contains a typed trace with:
+
+- request id
+- stage timestamps and durations
+- selected target MCPs
+- retrieved context sources
+- policy decision
+- warnings and fallback information
+- debug notes
+
+Low-level MCP transport details stay inside each specialist result `debug`
+object and are not promoted into the main response fields.
 
 ## Local Context
 

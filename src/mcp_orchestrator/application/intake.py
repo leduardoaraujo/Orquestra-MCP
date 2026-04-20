@@ -21,7 +21,7 @@ class HeuristicRequestUnderstandingService:
     docs_terms = ("documentation", "docs", "manual", "playbook", "documentacao")
     preview_terms = ("preview", "prepare", "generate", "safe sql", "do not execute")
     read_terms = ("show", "list", "find", "query", "select", "read", "inspect")
-    write_terms = ("insert", "update", "delete", "drop", "create", "alter", "truncate", "write")
+    write_terms = ("insert", "update", "delete", "drop", "create", "alter", "truncate")
     side_effect_terms = ("send", "email", "publish", "refresh", "deploy", "execute")
 
     def understand(self, request: UserRequest) -> RequestUnderstanding:

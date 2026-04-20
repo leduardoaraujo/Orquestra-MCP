@@ -2,11 +2,13 @@ import pytest
 
 from mcp_orchestrator.application import (
     DefaultContextComposer,
+    DefaultExecutionPolicyService,
     ExecutionRouter,
     HeuristicRequestInterpreter,
     McpRouter,
 )
-from mcp_orchestrator.domain.enums import ExecutionMode, McpTarget
+from mcp_orchestrator.application.trace import OrchestrationTraceRecorder
+from mcp_orchestrator.domain.enums import ExecutionMode, McpTarget, ResultStatus
 from mcp_orchestrator.domain.models import OrchestrateRequest, RagContext
 from mcp_orchestrator.infrastructure.mcp_clients import DefaultMcpClientRegistry
 
@@ -43,13 +45,17 @@ def test_excel_extraction_routes_to_excel() -> None:
 
 def test_postgresql_request_builds_preview_execution_plan() -> None:
     router = ExecutionRouter(DefaultMcpClientRegistry())
-
-    plan = router.create_plan(
-        build_enriched("Use PostgreSQL to prepare monthly sales revenue SQL")
+    enriched = build_enriched("Use PostgreSQL to prepare monthly sales revenue SQL")
+    policy = DefaultExecutionPolicyService().decide(
+        enriched,
+        OrchestrationTraceRecorder("test-correlation").trace,
     )
+
+    plan = router.create_plan(enriched, policy)
 
     assert plan.target_mcps == [McpTarget.POSTGRESQL]
     assert plan.execution_mode == ExecutionMode.PREVIEW_ONLY
+    assert plan.policy_decision is policy
     assert plan.tool_hints[McpTarget.POSTGRESQL] == "run_guided_query"
 
 
@@ -61,6 +67,22 @@ def test_generic_sql_request_does_not_select_sql_server_in_phase_zero() -> None:
     )
 
     assert plan.target_mcps == [McpTarget.POSTGRESQL]
+
+
+@pytest.mark.asyncio
+async def test_policy_blocked_plan_does_not_call_specialist() -> None:
+    router = ExecutionRouter(DefaultMcpClientRegistry())
+    enriched = build_enriched("Delete rows from PostgreSQL sales_orders")
+    policy = DefaultExecutionPolicyService().decide(
+        enriched,
+        OrchestrationTraceRecorder("test-correlation").trace,
+    )
+    plan = router.create_plan(enriched, policy)
+
+    results = await router.execute_plan(enriched, plan)
+
+    assert results[0].mcp_name == "execution_policy"
+    assert results[0].status == ResultStatus.ERROR
 
 
 @pytest.mark.asyncio

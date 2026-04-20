@@ -1,6 +1,12 @@
 import pytest
 
-from mcp_orchestrator.application import DefaultContextComposer, ExecutionRouter, HeuristicRequestInterpreter
+from mcp_orchestrator.application import (
+    DefaultContextComposer,
+    DefaultExecutionPolicyService,
+    ExecutionRouter,
+    HeuristicRequestInterpreter,
+)
+from mcp_orchestrator.application.trace import OrchestrationTraceRecorder
 from mcp_orchestrator.domain.enums import McpTarget, ResultStatus
 from mcp_orchestrator.domain.models import McpToolCallResponse, RetrievedContext, UserRequest
 from mcp_orchestrator.infrastructure.mcp_clients import DefaultMcpClientRegistry
@@ -45,11 +51,16 @@ class FakeRunner:
         )
 
 
-def build_postgres_specialist_request():
+def build_postgres_specialist_request(
+    *,
+    allow_execution: bool = False,
+    message: str = "Use PostgreSQL to prepare monthly sales revenue SQL.",
+):
     user_request = UserRequest(
-        message="Use PostgreSQL to prepare monthly sales revenue SQL.",
+        message=message,
         domain_hint="postgresql",
         tags=["sales", "postgresql"],
+        metadata={"allow_execution": allow_execution} if allow_execution else {},
     )
     understanding = HeuristicRequestInterpreter().understand(user_request)
     enriched = DefaultContextComposer().compose(
@@ -60,11 +71,14 @@ def build_postgres_specialist_request():
     )
     fake_client = PostgreSqlMcpClient(server_catalog=FakeCatalog(), tool_runner=FakeRunner())  # type: ignore[arg-type]
     router = ExecutionRouter(DefaultMcpClientRegistry(clients=[fake_client]))
-    plan = router.create_plan(enriched)
+    trace = OrchestrationTraceRecorder("cid").trace
+    policy = DefaultExecutionPolicyService().decide(enriched, trace)
+    plan = router.create_plan(enriched, policy)
     return router._specialist_request(  # noqa: SLF001
         enriched,
         plan,
         fake_client,
+        trace,
     )
 
 
@@ -73,9 +87,34 @@ def test_router_builds_postgresql_preview_request_from_enriched_context() -> Non
 
     assert specialist_request.tool_name == "run_guided_query"
     assert specialist_request.arguments["auto_execute"] is False
+    assert specialist_request.policy_decision is not None
+    assert specialist_request.policy_decision.preview_only is True
     assert specialist_request.arguments["limit"] == 100
     assert specialist_request.arguments["question"] != specialist_request.enriched_request.original_request
     assert "Original user request:" in str(specialist_request.arguments["question"])
+
+
+def test_router_allows_postgresql_auto_execute_only_when_policy_allows() -> None:
+    preview_request = build_postgres_specialist_request(allow_execution=True)
+    read_request = build_postgres_specialist_request(
+        allow_execution=True,
+        message="Read rows from PostgreSQL sales_orders.",
+    )
+
+    assert preview_request.arguments["auto_execute"] is False
+    assert read_request.arguments["auto_execute"] is True
+
+
+def test_postgresql_capabilities_describe_preview_and_read_support() -> None:
+    client = PostgreSqlMcpClient(server_catalog=FakeCatalog(), tool_runner=FakeRunner())  # type: ignore[arg-type]
+
+    capabilities = client.capabilities()
+
+    assert capabilities.target == McpTarget.POSTGRESQL
+    assert capabilities.supports_preview is True
+    assert capabilities.supports_read is True
+    assert capabilities.supports_write is False
+    assert capabilities.default_tool == "run_guided_query"
 
 
 @pytest.mark.asyncio
