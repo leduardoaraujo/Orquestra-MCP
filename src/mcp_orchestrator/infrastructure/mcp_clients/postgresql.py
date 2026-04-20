@@ -7,6 +7,7 @@ from mcp_orchestrator.domain.enums import Domain, McpTarget, ResultStatus, TaskT
 from mcp_orchestrator.domain.models import (
     EnrichedRequest,
     ExecutionPlan,
+    McpClientCapability,
     McpToolCallResponse,
     SpecialistExecutionRequest,
     SpecialistExecutionResult,
@@ -44,6 +45,24 @@ class PostgreSqlMcpClient:
             or request.understanding.task_type == TaskType.SQL_QUERY
         )
 
+    def capabilities(self) -> McpClientCapability:
+        return McpClientCapability(
+            name=self.name,
+            target=self.target,
+            supports_preview=True,
+            supports_read=True,
+            supports_write=False,
+            supports_side_effects=False,
+            default_tool="run_guided_query",
+            supported_tools=[
+                "run_guided_query",
+                "pg_execute_query",
+                "pg_list_tables",
+                "pg_describe_table",
+            ],
+            notes=["Phase 1 orchestration uses preview-first guided queries."],
+        )
+
     async def execute(self, request: SpecialistExecutionRequest) -> SpecialistExecutionResult:
         started_at = perf_counter()
         server = self.server_catalog.get(self.name)
@@ -58,9 +77,7 @@ class PostgreSqlMcpClient:
         duration_ms = (perf_counter() - started_at) * 1000
         status = ResultStatus.ERROR if response.is_error else ResultStatus.SUCCESS
         errors = self._errors(response) if response.is_error else []
-        warnings = [] if request.enriched_request.retrieved_context.items else [
-            "No local context item was retrieved before PostgreSQL execution."
-        ]
+        warnings = self._warnings(request)
 
         return SpecialistExecutionResult(
             mcp_name=self.name,
@@ -80,6 +97,9 @@ class PostgreSqlMcpClient:
                 "server_name": response.server_name,
                 "tool_name": response.tool_name,
                 "arguments": request.arguments,
+                "policy_decision": request.policy_decision.model_dump(mode="json")
+                if request.policy_decision
+                else None,
                 "raw_result": response.raw_result,
             },
         )
@@ -130,3 +150,11 @@ class PostgreSqlMcpClient:
                 for item in request.enriched_request.retrieved_context.items
             )
         )
+
+    def _warnings(self, request: SpecialistExecutionRequest) -> list[str]:
+        warnings = list(request.policy_decision.warnings) if request.policy_decision else []
+        if not request.enriched_request.retrieved_context.items:
+            warnings.append("No local context item was retrieved before PostgreSQL execution.")
+        if request.arguments.get("auto_execute") is False:
+            warnings.append("PostgreSQL request was executed in preview-only mode.")
+        return warnings

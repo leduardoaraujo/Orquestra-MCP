@@ -4,10 +4,12 @@ import asyncio
 from time import perf_counter
 from typing import Any
 
-from mcp_orchestrator.domain.enums import ExecutionMode, McpTarget, ResultStatus
+from mcp_orchestrator.domain.enums import ExecutionMode, McpTarget, ResultStatus, SafetyLevel
 from mcp_orchestrator.domain.models import (
     EnrichedRequest,
     ExecutionPlan,
+    ExecutionPolicyDecision,
+    OrchestrationTrace,
     SpecialistExecutionRequest,
     SpecialistExecutionResult,
 )
@@ -19,15 +21,19 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
         self,
         enriched_request: EnrichedRequest,
         registry: McpClientRegistry,
+        policy_decision: ExecutionPolicyDecision | None = None,
     ) -> ExecutionPlan:
         targets = self._available_targets(enriched_request, registry)
-        mode = self._execution_mode(targets)
+        mode = self._execution_mode(targets, policy_decision)
         trace = self._trace(enriched_request, targets, mode)
+        if policy_decision:
+            trace.extend(policy_decision.trace)
         return ExecutionPlan(
             correlation_id=enriched_request.correlation_id,
             target_mcps=targets,
             execution_mode=mode,
             tool_hints=self._tool_hints(targets),
+            policy_decision=policy_decision,
             trace=trace,
         )
 
@@ -57,7 +63,13 @@ class HeuristicExecutionPlanningStrategy(ExecutionPlanningStrategy):
             )
         ]
 
-    def _execution_mode(self, targets: list[McpTarget]) -> ExecutionMode:
+    def _execution_mode(
+        self,
+        targets: list[McpTarget],
+        policy_decision: ExecutionPolicyDecision | None,
+    ) -> ExecutionMode:
+        if policy_decision and policy_decision.preview_only:
+            return ExecutionMode.PREVIEW_ONLY
         if targets == [McpTarget.POSTGRESQL]:
             return ExecutionMode.PREVIEW_ONLY
         if len(targets) > 1:
@@ -96,8 +108,12 @@ class ExecutionRouter:
         self.registry = registry
         self.strategy = strategy or HeuristicExecutionPlanningStrategy()
 
-    def create_plan(self, enriched_request: EnrichedRequest) -> ExecutionPlan:
-        return self.strategy.create_plan(enriched_request, self.registry)
+    def create_plan(
+        self,
+        enriched_request: EnrichedRequest,
+        policy_decision: ExecutionPolicyDecision | None = None,
+    ) -> ExecutionPlan:
+        return self.strategy.create_plan(enriched_request, self.registry, policy_decision)
 
     def select_clients(self, enriched_request: EnrichedRequest) -> tuple[list[BaseMCPClient], list[str]]:
         plan = self.create_plan(enriched_request)
@@ -108,13 +124,17 @@ class ExecutionRouter:
         self,
         enriched_request: EnrichedRequest,
         plan: ExecutionPlan,
+        orchestration_trace: OrchestrationTrace | None = None,
     ) -> list[SpecialistExecutionResult]:
+        if plan.policy_decision and plan.policy_decision.safety_level == SafetyLevel.BLOCKED:
+            return [self._policy_blocked_result(enriched_request, plan)]
+
         clients = self._clients_for_plan(plan, enriched_request)
         if not clients:
             return [self._no_client_result(plan)]
 
         requests = [
-            self._specialist_request(enriched_request, plan, client)
+            self._specialist_request(enriched_request, plan, client, orchestration_trace)
             for client in clients
         ]
         return await asyncio.gather(
@@ -155,6 +175,7 @@ class ExecutionRouter:
         enriched_request: EnrichedRequest,
         plan: ExecutionPlan,
         client: BaseMCPClient,
+        orchestration_trace: OrchestrationTrace | None = None,
     ) -> SpecialistExecutionRequest:
         tool_name = plan.tool_hints.get(client.target, "execute")
         return SpecialistExecutionRequest(
@@ -164,6 +185,8 @@ class ExecutionRouter:
             arguments=self._arguments_for_target(enriched_request, plan, client.target),
             enriched_request=enriched_request,
             execution_plan=plan,
+            policy_decision=plan.policy_decision,
+            orchestration_trace=orchestration_trace,
         )
 
     def _arguments_for_target(
@@ -175,7 +198,7 @@ class ExecutionRouter:
         if target == McpTarget.POSTGRESQL:
             return {
                 "question": self._postgres_question(enriched_request),
-                "auto_execute": False,
+                "auto_execute": self._auto_execute(plan.policy_decision),
                 "limit": 100,
             }
         return {
@@ -200,6 +223,17 @@ class ExecutionRouter:
                 "Retrieved local context:",
                 *(context_lines or ["- No local context was retrieved."]),
             ]
+        )
+
+    def _auto_execute(self, policy_decision: ExecutionPolicyDecision | None) -> bool:
+        if not policy_decision:
+            return False
+        return bool(
+            policy_decision.allow_execution
+            and policy_decision.read_only
+            and not policy_decision.preview_only
+            and not policy_decision.write
+            and not policy_decision.side_effects
         )
 
     async def _safe_execute(
@@ -242,6 +276,29 @@ class ExecutionRouter:
             warnings=[],
             duration_ms=0,
             debug={},
+        )
+
+    def _policy_blocked_result(
+        self,
+        enriched_request: EnrichedRequest,
+        plan: ExecutionPlan,
+    ) -> SpecialistExecutionResult:
+        policy = plan.policy_decision
+        blocked_reason = policy.blocked_reason if policy else "Execution policy blocked the request."
+        return SpecialistExecutionResult(
+            mcp_name="execution_policy",
+            target=None,
+            status=ResultStatus.ERROR,
+            summary="Execution policy blocked specialist execution.",
+            structured_data=None,
+            sources_used=list(
+                dict.fromkeys(item.source_path for item in enriched_request.retrieved_context.items)
+            ),
+            trace=[*plan.trace, "No specialist MCP was called because policy blocked execution."],
+            errors=[blocked_reason or "Execution blocked."],
+            warnings=policy.warnings if policy else [],
+            duration_ms=0,
+            debug={"policy_decision": policy.model_dump(mode="json") if policy else None},
         )
 
     def _sources(self, request: SpecialistExecutionRequest) -> list[str]:

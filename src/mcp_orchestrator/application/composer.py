@@ -28,5 +28,6 @@ class DefaultContextComposer:
                 "Preserve all sources used in the result.",
             ],
             constraints=[*understanding.constraints],
+            metadata={**request.metadata},
             expected_response_format="NormalizedResponse",
         )

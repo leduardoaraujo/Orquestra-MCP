@@ -7,6 +7,7 @@ from mcp_orchestrator.domain.enums import McpTarget, ResultStatus
 from mcp_orchestrator.domain.models import (
     EnrichedRequest,
     ExecutionPlan,
+    McpClientCapability,
     SpecialistExecutionRequest,
     SpecialistExecutionResult,
 )
@@ -18,6 +19,17 @@ class PlaceholderMcpClient:
 
     def can_handle(self, plan: ExecutionPlan, request: EnrichedRequest) -> bool:
         return self.target in plan.target_mcps
+
+    def capabilities(self) -> McpClientCapability:
+        return McpClientCapability(
+            name=self.name,
+            target=self.target,
+            supports_preview=True,
+            supports_read=False,
+            supports_write=False,
+            supports_side_effects=False,
+            notes=["Placeholder client for a future specialist integration."],
+        )
 
     async def execute(self, request: SpecialistExecutionRequest) -> SpecialistExecutionResult:
         started_at = perf_counter()

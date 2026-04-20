@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from mcp_orchestrator.domain.enums import Domain, McpTarget, TaskType
+from mcp_orchestrator.domain.enums import Domain, McpTarget, RequestedAction, RiskLevel, TaskType
 from mcp_orchestrator.domain.models import RequestUnderstanding, UserRequest
 
 
@@ -19,22 +19,39 @@ class HeuristicRequestUnderstandingService:
     sql_terms = ("sql", "query", "consulta", "table", "tabela", "join", "database")
     excel_terms = ("excel", "xlsx", "spreadsheet", "worksheet", "planilha")
     docs_terms = ("documentation", "docs", "manual", "playbook", "documentacao")
+    preview_terms = ("preview", "prepare", "generate", "safe sql", "do not execute")
+    read_terms = ("show", "list", "find", "query", "select", "read", "inspect")
+    write_terms = ("insert", "update", "delete", "drop", "create", "alter", "truncate", "write")
+    side_effect_terms = ("send", "email", "publish", "refresh", "deploy", "execute")
 
     def understand(self, request: UserRequest) -> RequestUnderstanding:
         text = self._normalize(f"{request.message} {request.domain_hint or ''}")
         candidates = self._candidate_mcps(text)
         domain = self._domain(text, candidates)
         task_type = self._task_type(text, candidates)
+        requested_action = self._requested_action(text, task_type)
+        risk_level = self._risk_level(text, requested_action)
 
         return RequestUnderstanding(
             original_request=request.message,
             intent=self._intent(task_type, domain),
             domain=domain,
             task_type=task_type,
+            requested_action=requested_action,
+            target_preference=self._target_preference(candidates),
             relevant_sources=self._relevant_sources(task_type, domain),
             candidate_mcps=candidates,
             constraints=self._constraints(text),
+            ambiguities=self._ambiguities(text, candidates, task_type),
             confidence=self._confidence(text, candidates),
+            risk_level=risk_level,
+            reasoning_summary=self._reasoning_summary(
+                task_type,
+                domain,
+                requested_action,
+                candidates,
+                risk_level,
+            ),
         )
 
     def interpret(self, request: UserRequest) -> RequestUnderstanding:
@@ -82,6 +99,22 @@ class HeuristicRequestUnderstandingService:
             return TaskType.DOCUMENTATION_LOOKUP
         return TaskType.UNKNOWN
 
+    def _requested_action(self, text: str, task_type: TaskType) -> RequestedAction:
+        if self._contains_any(text, self.write_terms):
+            return RequestedAction.WRITE
+        if task_type == TaskType.DOCUMENTATION_LOOKUP or "schema" in text:
+            return RequestedAction.INSPECT_SCHEMA
+        if self._contains_any(text, self.preview_terms):
+            return RequestedAction.GENERATE_QUERY
+        if self._contains_any(text, self.read_terms):
+            return RequestedAction.READ
+        return RequestedAction.UNKNOWN
+
+    def _target_preference(self, candidates: list[McpTarget]) -> McpTarget | None:
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
     def _relevant_sources(self, task_type: TaskType, domain: Domain) -> list[str]:
         sources = ["business_rules", "schemas", "technical_docs"]
         if task_type in {TaskType.SEMANTIC_MODEL_QUERY, TaskType.SQL_QUERY, TaskType.COMPOSITE}:
@@ -99,6 +132,45 @@ class HeuristicRequestUnderstandingService:
         if "read only" in text or "somente leitura" in text:
             constraints.append("Read-only execution.")
         return constraints
+
+    def _ambiguities(
+        self,
+        text: str,
+        candidates: list[McpTarget],
+        task_type: TaskType,
+    ) -> list[str]:
+        ambiguities: list[str] = []
+        if not candidates and task_type != TaskType.DOCUMENTATION_LOOKUP:
+            ambiguities.append("No specialist MCP target was identified.")
+        if len(candidates) > 1:
+            ambiguities.append("Multiple specialist MCP targets may be relevant.")
+        if task_type == TaskType.SQL_QUERY and "sql" in text and not self._contains_any(text, self.postgresql_terms + self.sql_server_terms):
+            ambiguities.append("SQL dialect was not explicit; PostgreSQL is the Phase 1 default.")
+        return ambiguities
+
+    def _risk_level(self, text: str, requested_action: RequestedAction) -> RiskLevel:
+        if requested_action == RequestedAction.WRITE:
+            return RiskLevel.HIGH
+        if self._contains_any(text, self.side_effect_terms) and requested_action != RequestedAction.GENERATE_QUERY:
+            return RiskLevel.MEDIUM
+        if requested_action == RequestedAction.READ:
+            return RiskLevel.MEDIUM
+        return RiskLevel.LOW
+
+    def _reasoning_summary(
+        self,
+        task_type: TaskType,
+        domain: Domain,
+        requested_action: RequestedAction,
+        candidates: list[McpTarget],
+        risk_level: RiskLevel,
+    ) -> str:
+        target_text = ", ".join(target.value for target in candidates) or "no specialist target"
+        return (
+            f"Classified as {task_type.value} in {domain.value}; "
+            f"requested action is {requested_action.value}; "
+            f"candidate targets: {target_text}; risk is {risk_level.value}."
+        )
 
     def _intent(self, task_type: TaskType, domain: Domain) -> str:
         if task_type == TaskType.COMPOSITE:

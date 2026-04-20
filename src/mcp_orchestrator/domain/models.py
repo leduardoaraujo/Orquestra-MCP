@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
 
-from .enums import DocumentType, Domain, ExecutionMode, McpTarget, ResultStatus, TaskType
+from .enums import (
+    DocumentType,
+    Domain,
+    ExecutionMode,
+    McpTarget,
+    RequestedAction,
+    ResultStatus,
+    RiskLevel,
+    SafetyLevel,
+    TaskType,
+)
 
 
 class UserRequest(BaseModel):
@@ -19,10 +30,15 @@ class RequestUnderstanding(BaseModel):
     intent: str
     domain: Domain
     task_type: TaskType
+    requested_action: RequestedAction = RequestedAction.UNKNOWN
+    target_preference: McpTarget | None = None
     relevant_sources: list[str] = Field(default_factory=list)
     candidate_mcps: list[McpTarget] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    ambiguities: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    risk_level: RiskLevel = RiskLevel.LOW
+    reasoning_summary: str = ""
 
 
 class RetrievedContextItem(BaseModel):
@@ -48,6 +64,7 @@ class EnrichedRequest(BaseModel):
     retrieved_context: RetrievedContext
     execution_instructions: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     expected_response_format: str
 
     @property
@@ -59,11 +76,62 @@ class EnrichedRequest(BaseModel):
         return self.retrieved_context
 
 
+class ExecutionPolicyDecision(BaseModel):
+    correlation_id: str
+    preview_only: bool
+    read_only: bool
+    write: bool
+    side_effects: bool
+    requires_confirmation: bool
+    allow_execution: bool
+    blocked_reason: str | None = None
+    safety_level: SafetyLevel
+    risk_level: RiskLevel
+    decision_reason: str
+    warnings: list[str] = Field(default_factory=list)
+    trace: list[str] = Field(default_factory=list)
+
+
+class McpClientCapability(BaseModel):
+    name: str
+    target: McpTarget
+    supports_preview: bool = True
+    supports_read: bool = False
+    supports_write: bool = False
+    supports_side_effects: bool = False
+    default_tool: str | None = None
+    supported_tools: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class OrchestrationTraceStage(BaseModel):
+    name: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    duration_ms: float | None = Field(default=None, ge=0.0)
+    status: str = "started"
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class OrchestrationTrace(BaseModel):
+    request_id: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: datetime | None = None
+    stages: list[OrchestrationTraceStage] = Field(default_factory=list)
+    selected_target_mcps: list[McpTarget] = Field(default_factory=list)
+    retrieved_context_sources: list[str] = Field(default_factory=list)
+    policy_decision: ExecutionPolicyDecision | None = None
+    warnings: list[str] = Field(default_factory=list)
+    fallback_information: list[str] = Field(default_factory=list)
+    debug_notes: list[str] = Field(default_factory=list)
+
+
 class ExecutionPlan(BaseModel):
     correlation_id: str
     target_mcps: list[McpTarget] = Field(default_factory=list)
     execution_mode: ExecutionMode
     tool_hints: dict[McpTarget, str] = Field(default_factory=dict)
+    policy_decision: ExecutionPolicyDecision | None = None
     trace: list[str] = Field(default_factory=list)
 
 
@@ -74,6 +142,8 @@ class SpecialistExecutionRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     enriched_request: EnrichedRequest
     execution_plan: ExecutionPlan
+    policy_decision: ExecutionPolicyDecision | None = None
+    orchestration_trace: OrchestrationTrace | None = None
 
 
 class SpecialistExecutionResult(BaseModel):

@@ -45,6 +45,28 @@ class ExecutionMode(str, Enum):
     PREVIEW_ONLY = "preview_only"
 
 
+class RequestedAction(str, Enum):
+    PREVIEW = "preview"
+    READ = "read"
+    WRITE = "write"
+    INSPECT_SCHEMA = "inspect_schema"
+    GENERATE_QUERY = "generate_query"
+    UNKNOWN = "unknown"
+
+
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class SafetyLevel(str, Enum):
+    SAFE = "safe"
+    REVIEW_REQUIRED = "review_required"
+    BLOCKED = "blocked"
+
+
 class ResultStatus(str, Enum):
     SUCCESS = "success"
     PARTIAL_SUCCESS = "partial_success"

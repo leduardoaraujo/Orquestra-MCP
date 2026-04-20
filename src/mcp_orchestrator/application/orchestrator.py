@@ -12,6 +12,7 @@ from mcp_orchestrator.domain.models import (
 from mcp_orchestrator.domain.ports import (
     ContextComposer,
     ContextRetriever,
+    ExecutionPolicyService,
     RequestUnderstandingService,
     ResponseNormalizer,
 )
@@ -23,7 +24,9 @@ from mcp_orchestrator.observability import TimingRecorder, get_logger, log_stage
 
 from .composer import DefaultContextComposer
 from .intake import HeuristicRequestUnderstandingService
+from .policy import DefaultExecutionPolicyService
 from .routing import ExecutionRouter
+from .trace import OrchestrationTraceRecorder
 
 
 class OrchestrationService:
@@ -34,6 +37,7 @@ class OrchestrationService:
         interpreter: RequestUnderstandingService | None = None,
         retriever: ContextRetriever,
         composer: ContextComposer,
+        policy_service: ExecutionPolicyService | None = None,
         router: ExecutionRouter,
         normalizer: ResponseNormalizer,
         server_catalog: LocalMcpServerCatalog,
@@ -45,6 +49,7 @@ class OrchestrationService:
             raise ValueError("understanding_service is required.")
         self.retriever = retriever
         self.composer = composer
+        self.policy_service = policy_service or DefaultExecutionPolicyService()
         self.router = router
         self.normalizer = normalizer
         self.server_catalog = server_catalog
@@ -55,40 +60,82 @@ class OrchestrationService:
     async def orchestrate(self, request: UserRequest) -> NormalizedResponse:
         correlation_id = str(uuid4())
         timing = TimingRecorder()
+        trace_recorder = OrchestrationTraceRecorder(correlation_id)
 
+        trace_recorder.start_stage("intake")
         started_at = timing.start()
         understanding = self.understanding_service.understand(request)
-        self._log(correlation_id, "intake", timing.stop("intake", started_at))
+        self._record_stage(trace_recorder, correlation_id, "intake", timing, started_at)
 
+        trace_recorder.start_stage("context_retrieval")
         started_at = timing.start()
         retrieved_context = self.retriever.retrieve(
             request.message,
             filters=self._context_filters(request, understanding),
             limit=self.rag_top_k,
         )
-        self._log(correlation_id, "context_retrieval", timing.stop("context_retrieval", started_at))
+        trace_recorder.trace.retrieved_context_sources = list(
+            dict.fromkeys(item.source_path for item in retrieved_context.items)
+        )
+        self._record_stage(
+            trace_recorder,
+            correlation_id,
+            "context_retrieval",
+            timing,
+            started_at,
+            {"source_count": len(trace_recorder.trace.retrieved_context_sources)},
+        )
 
+        trace_recorder.start_stage("compose")
         started_at = timing.start()
         enriched = self.composer.compose(correlation_id, request, understanding, retrieved_context)
-        self._log(correlation_id, "compose", timing.stop("compose", started_at))
+        self._record_stage(trace_recorder, correlation_id, "compose", timing, started_at)
 
+        trace_recorder.start_stage("policy")
         started_at = timing.start()
-        plan = self.router.create_plan(enriched)
+        policy_decision = self.policy_service.decide(enriched, trace_recorder.trace)
+        trace_recorder.trace.policy_decision = policy_decision
+        trace_recorder.trace.warnings.extend(policy_decision.warnings)
+        self._record_stage(
+            trace_recorder,
+            correlation_id,
+            "policy",
+            timing,
+            started_at,
+            {
+                "safety_level": policy_decision.safety_level.value,
+                "allow_execution": policy_decision.allow_execution,
+            },
+        )
+
+        trace_recorder.start_stage("planning")
+        started_at = timing.start()
+        plan = self.router.create_plan(enriched, policy_decision)
+        trace_recorder.trace.selected_target_mcps = plan.target_mcps
         self._log(
             correlation_id,
             "planning",
             timing.stop("planning", started_at),
             {"selected_targets": [target.value for target in plan.target_mcps]},
         )
+        trace_recorder.end_stage(
+            "planning",
+            details={"selected_targets": [target.value for target in plan.target_mcps]},
+        )
 
+        trace_recorder.start_stage("mcp_execution")
         started_at = timing.start()
-        results = await self.router.execute_plan(enriched, plan)
-        self._log(correlation_id, "mcp_execution", timing.stop("mcp_execution", started_at))
+        results = await self.router.execute_plan(enriched, plan, trace_recorder.trace)
+        self._record_stage(trace_recorder, correlation_id, "mcp_execution", timing, started_at)
 
+        trace_recorder.start_stage("normalization")
         started_at = timing.start()
         response = self.normalizer.normalize(correlation_id, results, timing.timings)
         duration_ms = timing.stop("normalization", started_at)
         response.timings["normalization"] = round(duration_ms, 3)
+        trace_recorder.end_stage("normalization")
+        trace = trace_recorder.complete()
+        response.debug["orchestration_trace"] = trace.model_dump(mode="json")
         self._log(correlation_id, "normalization", duration_ms, {"status": response.status.value})
         return response
 
@@ -143,6 +190,19 @@ class OrchestrationService:
             extra=extra,
         )
 
+    def _record_stage(
+        self,
+        trace_recorder: OrchestrationTraceRecorder,
+        correlation_id: str,
+        stage: str,
+        timing: TimingRecorder,
+        started_at: float,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        duration_ms = timing.stop(stage, started_at)
+        trace_recorder.end_stage(stage, details=details)
+        self._log(correlation_id, stage, duration_ms, details)
+
 
 def create_orchestration_service(settings: Settings | None = None) -> OrchestrationService:
     settings = settings or Settings()
@@ -161,6 +221,7 @@ def create_orchestration_service(settings: Settings | None = None) -> Orchestrat
         understanding_service=HeuristicRequestUnderstandingService(),
         retriever=retriever,
         composer=DefaultContextComposer(),
+        policy_service=DefaultExecutionPolicyService(),
         router=router,
         normalizer=DefaultResponseNormalizer(),
         server_catalog=server_catalog,

@@ -6,7 +6,10 @@ from .enums import McpTarget
 from .models import (
     EnrichedRequest,
     ExecutionPlan,
+    ExecutionPolicyDecision,
+    McpClientCapability,
     NormalizedResponse,
+    OrchestrationTrace,
     RequestUnderstanding,
     RetrievedContext,
     SpecialistExecutionRequest,
@@ -47,11 +50,23 @@ class ContextComposer(Protocol):
         ...
 
 
+class ExecutionPolicyService(Protocol):
+    def decide(
+        self,
+        enriched_request: EnrichedRequest,
+        trace: OrchestrationTrace,
+    ) -> ExecutionPolicyDecision:
+        ...
+
+
 class BaseMCPClient(Protocol):
     name: str
     target: McpTarget
 
     def can_handle(self, plan: ExecutionPlan, request: EnrichedRequest) -> bool:
+        ...
+
+    def capabilities(self) -> McpClientCapability:
         ...
 
     async def execute(self, request: SpecialistExecutionRequest) -> SpecialistExecutionResult:
@@ -71,6 +86,7 @@ class ExecutionPlanningStrategy(Protocol):
         self,
         enriched_request: EnrichedRequest,
         registry: McpClientRegistry,
+        policy_decision: ExecutionPolicyDecision | None = None,
     ) -> ExecutionPlan:
         ...
 
