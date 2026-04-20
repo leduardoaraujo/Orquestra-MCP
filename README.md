@@ -170,6 +170,66 @@ Proxy tools:
 
 - `ask_orchestrator`: sends a contextual request to `POST /orchestrate`.
 - `orchestrator_health`: checks `GET /health` and reports whether the API is reachable.
+- `powerbi_*`: one proxy tool per Microsoft Power BI Modeling MCP tool, routed
+  through `POST /mcp-servers/power_bi/tools/{tool_name}`. Each tool receives the
+  inner Power BI `request` object.
+
+Examples:
+
+```json
+{
+  "tool": "powerbi_connection_operations",
+  "arguments": {
+    "request": {
+      "operation": "ConnectFabric",
+      "workspaceName": "Finance Workspace",
+      "semanticModelName": "Planejamento",
+      "tenantName": "myorg",
+      "clearCredential": false
+    }
+  }
+}
+```
+
+```json
+{
+  "tool": "powerbi_measure_operations",
+  "arguments": {
+    "request": {
+      "operation": "List",
+      "filter": {
+        "maxResults": 200
+      }
+    }
+  }
+}
+```
+
+Available Power BI proxy tools:
+
+```text
+powerbi_database_operations
+powerbi_trace_operations
+powerbi_named_expression_operations
+powerbi_measure_operations
+powerbi_object_translation_operations
+powerbi_dax_query_operations
+powerbi_perspective_operations
+powerbi_column_operations
+powerbi_user_hierarchy_operations
+powerbi_calculation_group_operations
+powerbi_security_role_operations
+powerbi_table_operations
+powerbi_calendar_operations
+powerbi_relationship_operations
+powerbi_model_operations
+powerbi_culture_operations
+powerbi_function_operations
+powerbi_query_group_operations
+powerbi_transaction_operations
+powerbi_connection_operations
+powerbi_partition_operations
+```
 
 ## API Endpoints
 

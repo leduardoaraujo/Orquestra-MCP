@@ -3,7 +3,12 @@ import json
 import httpx
 import pytest
 
-from mcp_orchestrator.mcp_proxy import OrchestratorProxyClient, OrchestratorProxySettings
+from mcp_orchestrator.mcp_proxy import (
+    POWERBI_TOOL_NAMES,
+    OrchestratorProxyClient,
+    OrchestratorProxySettings,
+    create_mcp_server,
+)
 
 
 def build_client(transport: httpx.MockTransport) -> OrchestratorProxyClient:
@@ -125,3 +130,77 @@ async def test_proxy_preserves_http_error_status_and_detail() -> None:
     assert result["status_code"] == 502
     assert result["error"] == "specialist MCP failed"
     assert result["detail"] == {"detail": "specialist MCP failed"}
+
+
+@pytest.mark.asyncio
+async def test_call_powerbi_tool_posts_to_direct_power_bi_endpoint() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.url.path, json.loads(request.content.decode("utf-8"))))
+        return httpx.Response(
+            200,
+            json={
+                "server_name": "power_bi",
+                "tool_name": "measure_operations",
+                "is_error": False,
+                "content": ["ok"],
+                "structured_content": {"data": [{"name": "Total Custo"}]},
+                "raw_result": {"transport": "stdio"},
+            },
+        )
+
+    result = await build_client(httpx.MockTransport(handler)).call_powerbi_tool(
+        "measure_operations",
+        {"operation": "List", "filter": {"maxResults": 10}},
+    )
+
+    assert requests == [
+        (
+            "/mcp-servers/power_bi/tools/measure_operations",
+            {
+                "arguments": {
+                    "request": {"operation": "List", "filter": {"maxResults": 10}}
+                }
+            },
+        )
+    ]
+    assert result["ok"] is True
+    assert result["server_name"] == "power_bi"
+    assert result["tool_name"] == "measure_operations"
+    assert result["structured_content"] == {"data": [{"name": "Total Custo"}]}
+
+
+@pytest.mark.asyncio
+async def test_call_powerbi_tool_reports_tool_level_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "server_name": "power_bi",
+                "tool_name": "connection_operations",
+                "is_error": True,
+                "content": ["failed"],
+                "structured_content": None,
+                "raw_result": {"isError": True},
+            },
+        )
+
+    result = await build_client(httpx.MockTransport(handler)).call_powerbi_tool(
+        "connection_operations",
+        {"operation": "ConnectFabric"},
+    )
+
+    assert result["ok"] is False
+    assert result["is_error"] is True
+    assert result["content"] == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_server_registers_one_proxy_tool_for_each_power_bi_tool() -> None:
+    tool_names = {tool.name for tool in await create_mcp_server().list_tools()}
+
+    assert "ask_orchestrator" in tool_names
+    assert "orchestrator_health" in tool_names
+    for tool_name in POWERBI_TOOL_NAMES:
+        assert f"powerbi_{tool_name}" in tool_names

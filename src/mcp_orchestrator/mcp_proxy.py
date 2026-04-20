@@ -10,6 +10,30 @@ from mcp.server.fastmcp import FastMCP
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_TIMEOUT_SECONDS = 60.0
+POWERBI_MCP_SERVER_NAME = "power_bi"
+POWERBI_TOOL_NAMES = [
+    "database_operations",
+    "trace_operations",
+    "named_expression_operations",
+    "measure_operations",
+    "object_translation_operations",
+    "dax_query_operations",
+    "perspective_operations",
+    "column_operations",
+    "user_hierarchy_operations",
+    "calculation_group_operations",
+    "security_role_operations",
+    "table_operations",
+    "calendar_operations",
+    "relationship_operations",
+    "model_operations",
+    "culture_operations",
+    "function_operations",
+    "query_group_operations",
+    "transaction_operations",
+    "connection_operations",
+    "partition_operations",
+]
 
 
 @dataclass(frozen=True)
@@ -76,6 +100,40 @@ class OrchestratorProxyClient:
         if not result["ok"]:
             return result
         return self._format_orchestrate_response(result["data"], include_debug=include_debug)
+
+    async def call_powerbi_tool(
+        self,
+        tool_name: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool_name not in POWERBI_TOOL_NAMES:
+            return {
+                "ok": False,
+                "api_url": self.settings.api_url,
+                "error": f"Unsupported Power BI MCP tool: {tool_name}",
+                "supported_tools": POWERBI_TOOL_NAMES,
+            }
+
+        result = await self._request(
+            "POST",
+            f"/mcp-servers/{POWERBI_MCP_SERVER_NAME}/tools/{tool_name}",
+            json={"arguments": {"request": request}},
+        )
+        if not result["ok"]:
+            return result
+
+        data = result["data"]
+        is_error = bool(data.get("is_error", False))
+        return {
+            "ok": not is_error,
+            "api_url": self.settings.api_url,
+            "server_name": data.get("server_name"),
+            "tool_name": data.get("tool_name"),
+            "is_error": is_error,
+            "content": data.get("content", []),
+            "structured_content": data.get("structured_content"),
+            "raw_result": data.get("raw_result", {}),
+        }
 
     async def _request(
         self,
@@ -192,7 +250,31 @@ def create_mcp_server(
             include_debug=include_debug,
         )
 
+    for tool_name in POWERBI_TOOL_NAMES:
+        server.add_tool(
+            _build_powerbi_proxy_tool(proxy_client, tool_name),
+            name=f"powerbi_{tool_name}",
+            description=(
+                f"Proxy for Power BI MCP `{tool_name}`. Pass the inner "
+                "`request` object expected by the Microsoft Power BI Modeling MCP tool."
+            ),
+        )
+
     return server
+
+
+def _build_powerbi_proxy_tool(
+    proxy_client: OrchestratorProxyClient,
+    tool_name: str,
+):
+    async def powerbi_tool(request: dict[str, Any]) -> dict[str, Any]:
+        return await proxy_client.call_powerbi_tool(tool_name, request)
+
+    powerbi_tool.__name__ = f"powerbi_{tool_name}"
+    powerbi_tool.__doc__ = (
+        f"Call Power BI MCP tool `{tool_name}` through the orchestrator API."
+    )
+    return powerbi_tool
 
 
 def run() -> None:
@@ -206,6 +288,7 @@ if __name__ == "__main__":
 __all__ = [
     "OrchestratorProxyClient",
     "OrchestratorProxySettings",
+    "POWERBI_TOOL_NAMES",
     "create_mcp_server",
     "run",
 ]
