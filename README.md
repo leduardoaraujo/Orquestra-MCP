@@ -1,4 +1,4 @@
-# General MCP Tool
+# Orquestra-MCP
 
 This repository contains two Python packages:
 
